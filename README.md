@@ -48,6 +48,8 @@ https://TU-SERVICIO.onrender.com/mcp
 
 El registro dinamico acepta `application/json` compatible con RFC 7591. Para clientes publicos como ChatGPT, usa `token_endpoint_auth_method: "none"` y Authorization Code con PKCE.
 
+Cuando `MCP_OWNER_PASSWORD` esta configurada, ChatGPT abrira una pantalla de autorizacion en `/oauth/authorize` y pedira esa contrasena antes de emitir el token OAuth.
+
 ## Herramientas MCP
 
 - `theodds_get_upcoming_odds_us`

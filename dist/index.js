@@ -127,6 +127,26 @@ function text(res, status, body, headers = {}) {
   res.end(body);
 }
 
+function html(res, status, body, headers = {}) {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    ...headers
+  });
+  res.end(body);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function publicBaseUrl(req) {
   if (CONFIGURED_PUBLIC_BASE_URL) {
     return CONFIGURED_PUBLIC_BASE_URL;
@@ -460,13 +480,52 @@ async function handleRegister(req, res) {
   });
 }
 
-function handleAuthorize(req, res, url) {
-  const responseType = url.searchParams.get("response_type");
-  const clientId = url.searchParams.get("client_id") || "";
-  const redirectUri = url.searchParams.get("redirect_uri");
-  const state = url.searchParams.get("state");
-  const codeChallenge = url.searchParams.get("code_challenge");
-  const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "plain";
+function renderAuthorizeForm(res, params, error = "") {
+  const hiddenInputs = [...params.entries()]
+    .filter(([key]) => key !== "password")
+    .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
+    .join("\n");
+
+  html(res, error ? 401 : 200, `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TheOdds MCP Authorization</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Arial, sans-serif; background: #f6f7f9; color: #101828; }
+    main { width: min(420px, calc(100vw - 32px)); background: white; border: 1px solid #d0d5dd; border-radius: 8px; padding: 28px; box-shadow: 0 16px 32px rgba(16, 24, 40, 0.08); }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 0 0 18px; color: #475467; line-height: 1.45; }
+    label { display: block; font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+    input[type="password"] { width: 100%; box-sizing: border-box; border: 1px solid #98a2b3; border-radius: 6px; padding: 12px; font-size: 16px; }
+    button { width: 100%; margin-top: 16px; border: 0; border-radius: 6px; padding: 12px 14px; background: #155eef; color: white; font-size: 16px; font-weight: 700; cursor: pointer; }
+    .error { margin-bottom: 16px; color: #b42318; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TheOdds MCP</h1>
+    <p>Enter the owner password to authorize ChatGPT.</p>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+    <form method="post" action="/oauth/authorize">
+      ${hiddenInputs}
+      <label for="password">Owner password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+      <button type="submit">Authorize</button>
+    </form>
+  </main>
+</body>
+</html>`);
+}
+
+function issueAuthorizationCode(res, params) {
+  const responseType = params.get("response_type");
+  const clientId = params.get("client_id") || "";
+  const redirectUri = params.get("redirect_uri");
+  const state = params.get("state");
+  const codeChallenge = params.get("code_challenge");
+  const codeChallengeMethod = params.get("code_challenge_method") || "plain";
   const client = clients.get(clientId);
   const code = newSecret(24);
 
@@ -500,7 +559,7 @@ function handleAuthorize(req, res, url) {
     redirectUri,
     codeChallenge,
     codeChallengeMethod,
-    scope: url.searchParams.get("scope") || client.scope,
+    scope: params.get("scope") || client.scope,
     expiresAt: Date.now() + 5 * 60 * 1000
   });
 
@@ -509,6 +568,29 @@ function handleAuthorize(req, res, url) {
   if (state) redirect.searchParams.set("state", state);
   res.writeHead(302, { location: redirect.toString() });
   res.end();
+}
+
+async function handleAuthorize(req, res, url) {
+  if (!MCP_OWNER_PASSWORD) {
+    issueAuthorizationCode(res, url.searchParams);
+    return;
+  }
+
+  if (req.method === "GET") {
+    renderAuthorizeForm(res, url.searchParams);
+    return;
+  }
+
+  const rawBody = await readBody(req);
+  const params = new URLSearchParams(rawBody);
+  const password = params.get("password") || "";
+  if (!safeEqual(MCP_OWNER_PASSWORD, password)) {
+    renderAuthorizeForm(res, params, "Invalid password.");
+    return;
+  }
+
+  params.delete("password");
+  issueAuthorizationCode(res, params);
 }
 
 async function handleToken(req, res) {
@@ -593,8 +675,8 @@ async function router(req, res) {
       json(res, 200, protectedResourceMetadata(req));
     } else if ((url.pathname === "/oauth/register" || url.pathname === "/register" || url.pathname === "/oauth/clients") && req.method === "POST") {
       await handleRegister(req, res);
-    } else if (url.pathname === "/oauth/authorize" && req.method === "GET") {
-      handleAuthorize(req, res, url);
+    } else if (url.pathname === "/oauth/authorize" && (req.method === "GET" || req.method === "POST")) {
+      await handleAuthorize(req, res, url);
     } else if (url.pathname === "/oauth/token" && req.method === "POST") {
       await handleToken(req, res);
     } else if (url.pathname === "/mcp" && (req.method === "GET" || req.method === "POST")) {
