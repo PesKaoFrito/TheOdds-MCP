@@ -1,0 +1,14 @@
+{
+  "name": "theodds-mcp",
+  "version": "1.0.0",
+  "description": "MCP server with OAuth for The Odds API.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "test": "node test/smoke.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: theodds-mcp
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: THEODDS_API_KEY
+        sync: false
+      - key: MCP_OWNER_PASSWORD
+        generateValue: true
+      - key: PUBLIC_BASE_URL
+        sync: false
