@@ -57,6 +57,37 @@ const tools = [
       required: ["region"],
       additionalProperties: false
     }
+  },
+  {
+    name: "theodds_get_odds_by_sport",
+    description: "Fetch odds for a specific sport key from The Odds API, for example soccer_epl, basketball_nba, americanfootball_nfl, or baseball_mlb.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sportKey: {
+          type: "string",
+          description: "The Odds API sport key. Use theodds_get_sports to discover valid keys."
+        },
+        region: {
+          type: "string",
+          enum: ["us", "uk", "eu", "au"],
+          default: "us",
+          description: "Bookmaker region."
+        },
+        markets: {
+          type: "string",
+          default: "h2h",
+          description: "Comma-separated markets, for example h2h."
+        },
+        oddsFormat: {
+          type: "string",
+          enum: ["american", "decimal"],
+          description: "Odds format."
+        }
+      },
+      required: ["sportKey"],
+      additionalProperties: false
+    }
   }
 ];
 
@@ -264,6 +295,23 @@ async function callTool(name, args = {}) {
     }
 
     return theOddsFetch("sports/upcoming/odds/", {
+      regions: region,
+      markets: args.markets || "h2h",
+      oddsFormat: args.oddsFormat || (region === "us" ? "american" : undefined)
+    });
+  }
+
+  if (name === "theodds_get_odds_by_sport") {
+    const sportKey = args.sportKey;
+    const region = args.region || "us";
+    if (!sportKey || typeof sportKey !== "string") {
+      throw new Error("sportKey is required. Use theodds_get_sports to discover valid keys.");
+    }
+    if (!REGION_PRESETS[region]) {
+      throw new Error("region must be one of: us, uk, eu, au");
+    }
+
+    return theOddsFetch(`sports/${encodeURIComponent(sportKey)}/odds`, {
       regions: region,
       markets: args.markets || "h2h",
       oddsFormat: args.oddsFormat || (region === "us" ? "american" : undefined)

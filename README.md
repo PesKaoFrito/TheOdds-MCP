@@ -56,5 +56,14 @@ El registro dinamico acepta `application/json` compatible con RFC 7591. Para cli
 - `theodds_get_upcoming_odds_au`
 - `theodds_get_sports`
 - `theodds_get_upcoming_odds`
+- `theodds_get_odds_by_sport`
 
 `theodds_get_upcoming_odds` permite elegir `region`, `markets` y `oddsFormat`.
+
+`theodds_get_odds_by_sport` permite filtrar por deporte usando `sportKey`. Primero puedes llamar `theodds_get_sports` para ver las llaves disponibles. Ejemplos comunes:
+
+- `americanfootball_nfl`
+- `basketball_nba`
+- `baseball_mlb`
+- `icehockey_nhl`
+- `soccer_epl`
