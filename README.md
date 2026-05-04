@@ -46,6 +46,8 @@ https://TU-SERVICIO.onrender.com/mcp
 - `GET /oauth/authorize`: autorizacion OAuth con redireccion.
 - `POST /oauth/token`: emision de token.
 
+El registro dinamico acepta `application/json` compatible con RFC 7591. Para clientes publicos como ChatGPT, usa `token_endpoint_auth_method: "none"` y Authorization Code con PKCE.
+
 ## Herramientas MCP
 
 - `theodds_get_upcoming_odds_us`

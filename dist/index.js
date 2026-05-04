@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 const PORT = Number(process.env.PORT || 3000);
 const CONFIGURED_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
@@ -116,7 +116,9 @@ function oauthMetadata(req) {
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "client_credentials"],
     token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-    code_challenge_methods_supported: ["plain", "S256"]
+    code_challenge_methods_supported: ["plain", "S256"],
+    scopes_supported: ["mcp"],
+    service_documentation: "https://the-odds-api.com/liveapi/guides/v4/"
   };
 }
 
@@ -168,6 +170,10 @@ function safeEqual(a, b) {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function sha256Base64Url(value) {
+  return createHash("sha256").update(value).digest("base64url");
 }
 
 function issueToken(subject) {
@@ -359,32 +365,94 @@ async function handleRegister(req, res) {
   const rawBody = await readBody(req);
   const metadata = rawBody ? parseFormOrJson(req, rawBody) : {};
   const clientId = newSecret(18);
-  const clientSecret = newSecret(32);
+  const requestedAuthMethod = metadata.token_endpoint_auth_method || "none";
+  const tokenEndpointAuthMethod = ["none", "client_secret_post", "client_secret_basic"].includes(requestedAuthMethod)
+    ? requestedAuthMethod
+    : "none";
+  const clientSecret = tokenEndpointAuthMethod === "none" ? undefined : newSecret(32);
+  const redirectUris = Array.isArray(metadata.redirect_uris) ? metadata.redirect_uris : [];
+  const grantTypes = Array.isArray(metadata.grant_types) && metadata.grant_types.length
+    ? metadata.grant_types
+    : ["authorization_code"];
+  const responseTypes = Array.isArray(metadata.response_types) && metadata.response_types.length
+    ? metadata.response_types
+    : ["code"];
+
   clients.set(clientId, {
     clientSecret,
-    redirectUris: metadata.redirect_uris || metadata.redirectUris || []
+    tokenEndpointAuthMethod,
+    redirectUris,
+    grantTypes,
+    responseTypes,
+    clientName: metadata.client_name || "Dynamic MCP client",
+    clientUri: metadata.client_uri,
+    scope: metadata.scope || "mcp"
   });
-  json(res, 201, {
+
+  const response = {
     client_id: clientId,
-    client_secret: clientSecret,
     client_id_issued_at: Math.floor(Date.now() / 1000),
-    token_endpoint_auth_method: "client_secret_post"
+    token_endpoint_auth_method: tokenEndpointAuthMethod,
+    redirect_uris: redirectUris,
+    grant_types: grantTypes,
+    response_types: responseTypes,
+    client_name: metadata.client_name || "Dynamic MCP client",
+    scope: metadata.scope || "mcp"
+  };
+
+  if (metadata.client_uri) response.client_uri = metadata.client_uri;
+  if (clientSecret) {
+    response.client_secret = clientSecret;
+    response.client_secret_expires_at = 0;
+  }
+
+  json(res, 201, response, {
+    "cache-control": "no-store",
+    pragma: "no-cache"
   });
 }
 
 function handleAuthorize(req, res, url) {
-  const clientId = url.searchParams.get("client_id") || "anonymous";
+  const responseType = url.searchParams.get("response_type");
+  const clientId = url.searchParams.get("client_id") || "";
   const redirectUri = url.searchParams.get("redirect_uri");
   const state = url.searchParams.get("state");
+  const codeChallenge = url.searchParams.get("code_challenge");
+  const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "plain";
+  const client = clients.get(clientId);
   const code = newSecret(24);
+
+  if (responseType !== "code") {
+    json(res, 400, { error: "unsupported_response_type" });
+    return;
+  }
+
+  if (!client) {
+    json(res, 400, { error: "invalid_client" });
+    return;
+  }
 
   if (!redirectUri) {
     json(res, 400, { error: "invalid_request", error_description: "Missing redirect_uri" });
     return;
   }
 
+  if (client.redirectUris.length && !client.redirectUris.includes(redirectUri)) {
+    json(res, 400, { error: "invalid_request", error_description: "redirect_uri is not registered for this client" });
+    return;
+  }
+
+  if (codeChallengeMethod !== "plain" && codeChallengeMethod !== "S256") {
+    json(res, 400, { error: "invalid_request", error_description: "Unsupported code_challenge_method" });
+    return;
+  }
+
   authCodes.set(code, {
     clientId,
+    redirectUri,
+    codeChallenge,
+    codeChallengeMethod,
+    scope: url.searchParams.get("scope") || client.scope,
     expiresAt: Date.now() + 5 * 60 * 1000
   });
 
@@ -406,6 +474,38 @@ async function handleToken(req, res) {
       json(res, 400, { error: "invalid_grant" });
       return;
     }
+
+    const client = clients.get(code.clientId);
+    if (!client || body.client_id !== code.clientId) {
+      json(res, 401, { error: "invalid_client" });
+      return;
+    }
+
+    if (code.redirectUri && body.redirect_uri && body.redirect_uri !== code.redirectUri) {
+      json(res, 400, { error: "invalid_grant" });
+      return;
+    }
+
+    if (client.tokenEndpointAuthMethod !== "none" && !safeEqual(client.clientSecret, body.client_secret || "")) {
+      json(res, 401, { error: "invalid_client" });
+      return;
+    }
+
+    if (code.codeChallenge) {
+      if (!body.code_verifier) {
+        json(res, 400, { error: "invalid_request", error_description: "Missing code_verifier" });
+        return;
+      }
+
+      const verifierChallenge = code.codeChallengeMethod === "S256"
+        ? sha256Base64Url(body.code_verifier)
+        : body.code_verifier;
+      if (!safeEqual(verifierChallenge, code.codeChallenge)) {
+        json(res, 400, { error: "invalid_grant" });
+        return;
+      }
+    }
+
     authCodes.delete(body.code);
     json(res, 200, issueToken(code.clientId));
     return;
@@ -439,11 +539,11 @@ async function router(req, res) {
   try {
     if (url.pathname === "/health") {
       json(res, 200, { ok: true });
-    } else if (url.pathname === "/.well-known/oauth-authorization-server") {
+    } else if (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname.startsWith("/.well-known/oauth-authorization-server/")) {
       json(res, 200, oauthMetadata(req));
-    } else if (url.pathname === "/.well-known/oauth-protected-resource") {
+    } else if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname.startsWith("/.well-known/oauth-protected-resource/")) {
       json(res, 200, protectedResourceMetadata(req));
-    } else if (url.pathname === "/oauth/register" && req.method === "POST") {
+    } else if ((url.pathname === "/oauth/register" || url.pathname === "/register" || url.pathname === "/oauth/clients") && req.method === "POST") {
       await handleRegister(req, res);
     } else if (url.pathname === "/oauth/authorize" && req.method === "GET") {
       handleAuthorize(req, res, url);
