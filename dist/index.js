@@ -1,11 +1,14 @@
 import http from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const PORT = Number(process.env.PORT || 3000);
 const CONFIGURED_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
 const MCP_OWNER_PASSWORD = process.env.MCP_OWNER_PASSWORD || "";
 const THEODDS_API_KEY = process.env.THEODDS_API_KEY || "";
 const TOKEN_TTL_SECONDS = Number(process.env.TOKEN_TTL_SECONDS || 60 * 60 * 8);
+const CLIENT_STORE_PATH = process.env.CLIENT_STORE_PATH || join(process.cwd(), ".data", "oauth-clients.json");
 
 const clients = new Map();
 const authCodes = new Map();
@@ -217,10 +220,51 @@ function newSecret(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 
+function loadClients() {
+  try {
+    const storedClients = JSON.parse(readFileSync(CLIENT_STORE_PATH, "utf8"));
+    for (const [clientId, client] of Object.entries(storedClients)) {
+      clients.set(clientId, client);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`Could not load OAuth clients: ${error.message}`);
+    }
+  }
+}
+
+function saveClients() {
+  try {
+    mkdirSync(dirname(CLIENT_STORE_PATH), { recursive: true });
+    writeFileSync(CLIENT_STORE_PATH, JSON.stringify(Object.fromEntries(clients), null, 2));
+  } catch (error) {
+    console.warn(`Could not save OAuth clients: ${error.message}`);
+  }
+}
+
 function safeEqual(a, b) {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function parseBasicClientAuth(req) {
+  const authorization = req.headers.authorization || "";
+  const match = authorization.match(/^Basic\s+(.+)$/i);
+  if (!match) {
+    return {};
+  }
+
+  const decoded = Buffer.from(match[1], "base64").toString("utf8");
+  const separator = decoded.indexOf(":");
+  if (separator === -1) {
+    return {};
+  }
+
+  return {
+    client_id: decodeURIComponent(decoded.slice(0, separator)),
+    client_secret: decodeURIComponent(decoded.slice(separator + 1))
+  };
 }
 
 function sha256Base64Url(value) {
@@ -456,6 +500,7 @@ async function handleRegister(req, res) {
     clientUri: metadata.client_uri,
     scope: metadata.scope || "mcp"
   });
+  saveClients();
 
   const response = {
     client_id: clientId,
@@ -526,7 +571,7 @@ function issueAuthorizationCode(res, params) {
   const state = params.get("state");
   const codeChallenge = params.get("code_challenge");
   const codeChallengeMethod = params.get("code_challenge_method") || "plain";
-  const client = clients.get(clientId);
+  let client = clients.get(clientId);
   const code = newSecret(24);
 
   if (responseType !== "code") {
@@ -535,8 +580,17 @@ function issueAuthorizationCode(res, params) {
   }
 
   if (!client) {
-    json(res, 400, { error: "invalid_client" });
-    return;
+    client = {
+      clientSecret: undefined,
+      tokenEndpointAuthMethod: "none",
+      redirectUris: redirectUri ? [redirectUri] : [],
+      grantTypes: ["authorization_code"],
+      responseTypes: ["code"],
+      clientName: "Recovered public MCP client",
+      scope: params.get("scope") || "mcp"
+    };
+    clients.set(clientId, client);
+    saveClients();
   }
 
   if (!redirectUri) {
@@ -596,6 +650,9 @@ async function handleAuthorize(req, res, url) {
 async function handleToken(req, res) {
   const rawBody = await readBody(req);
   const body = parseFormOrJson(req, rawBody);
+  const basicAuth = parseBasicClientAuth(req);
+  if (!body.client_id && basicAuth.client_id) body.client_id = basicAuth.client_id;
+  if (!body.client_secret && basicAuth.client_secret) body.client_secret = basicAuth.client_secret;
   const grantType = body.grant_type;
 
   if (grantType === "authorization_code") {
@@ -605,8 +662,22 @@ async function handleToken(req, res) {
       return;
     }
 
-    const client = clients.get(code.clientId);
-    if (!client || body.client_id !== code.clientId) {
+    let client = clients.get(code.clientId);
+    if (!client) {
+      client = {
+        clientSecret: undefined,
+        tokenEndpointAuthMethod: "none",
+        redirectUris: code.redirectUri ? [code.redirectUri] : [],
+        grantTypes: ["authorization_code"],
+        responseTypes: ["code"],
+        clientName: "Recovered public MCP client",
+        scope: code.scope || "mcp"
+      };
+      clients.set(code.clientId, client);
+      saveClients();
+    }
+
+    if (body.client_id && body.client_id !== code.clientId) {
       json(res, 401, { error: "invalid_client" });
       return;
     }
@@ -690,6 +761,8 @@ async function router(req, res) {
 }
 
 const server = http.createServer(router);
+
+loadClients();
 
 server.listen(PORT, () => {
   console.log(`TheOdds MCP listening on ${CONFIGURED_PUBLIC_BASE_URL || `http://localhost:${PORT}`}`);

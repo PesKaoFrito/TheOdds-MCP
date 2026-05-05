@@ -1,0 +1,16 @@
+{
+  "lost-client-from-chatgpt": {
+    "tokenEndpointAuthMethod": "none",
+    "redirectUris": [
+      "https://chat.openai.com/aip/g-test/oauth/callback"
+    ],
+    "grantTypes": [
+      "authorization_code"
+    ],
+    "responseTypes": [
+      "code"
+    ],
+    "clientName": "Recovered public MCP client",
+    "scope": "mcp"
+  }
+}

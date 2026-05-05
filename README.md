@@ -50,6 +50,8 @@ El registro dinamico acepta `application/json` compatible con RFC 7591. Para cli
 
 Cuando `MCP_OWNER_PASSWORD` esta configurada, ChatGPT abrira una pantalla de autorizacion en `/oauth/authorize` y pedira esa contrasena antes de emitir el token OAuth.
 
+Si ChatGPT muestra `invalid_client` despues de un redeploy o reinicio de Render, elimina la app de ChatGPT y conectala de nuevo. El servidor persiste registros dinamicos en `.data/oauth-clients.json` y tambien recupera clientes publicos al autorizar con contrasena, pero ChatGPT puede retener un `client_id` viejo mientras renegocia OAuth.
+
 ## Herramientas MCP
 
 - `theodds_get_upcoming_odds_us`
