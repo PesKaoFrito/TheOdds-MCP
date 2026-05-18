@@ -764,6 +764,29 @@ const server = http.createServer(router);
 
 loadClients();
 
+function startKeepAlive() {
+  const baseUrl = CONFIGURED_PUBLIC_BASE_URL;
+  if (!baseUrl) {
+    return;
+  }
+
+  const url = `${baseUrl}/health`;
+  const minInterval = 10 * 60 * 1000;
+  const jitter = () => Math.random() * 2 * 60 * 1000;
+
+  async function ping() {
+    try {
+      const res = await fetch(url, { headers: { "user-agent": "theodds-mcp/1.0" } });
+      if (!res.ok) console.warn(`[keepalive] Status ${res.status}`);
+    } catch { /* service may be sleeping — expected */ }
+  }
+
+  setTimeout(ping, 5_000);
+  setInterval(ping, minInterval + jitter());
+  console.log(`[keepalive] Pinging ${url} every ~10 min`);
+}
+
 server.listen(PORT, () => {
   console.log(`TheOdds MCP listening on ${CONFIGURED_PUBLIC_BASE_URL || `http://localhost:${PORT}`}`);
+  startKeepAlive();
 });
